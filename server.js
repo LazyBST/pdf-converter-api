@@ -11,6 +11,7 @@ import {
   PutObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import cors from "cors";
 
 const barCodeYcoordinateAdjustment = -35;
 const barCodeXcoordinateAdjustment = 5;
@@ -21,6 +22,7 @@ const randomNumberMultiplier = 10000000000;
 const app = express();
 
 app.use(express.json({ limit: "900mb" }));
+app.use(cors());
 
 const s3Client = new S3Client({
   credentials: {
