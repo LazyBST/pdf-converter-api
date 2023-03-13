@@ -16,11 +16,51 @@ const barCodeYcoordinateAdjustment = -35;
 const barCodeXcoordinateAdjustment = 5;
 
 const additionalPageHeight = 5;
+const randomNumberMultiplier = 10000000000;
+
 const app = express();
 
 app.use(express.json({ limit: "900mb" }));
 
-app.post("/api/pdf-converter", async (req, res) => {
+const s3Client = new S3Client({
+  credentials: {
+    accessKeyId: process.env.S3_ACCESS_KEY_ID,
+    secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+  },
+  region: process.env.S3_REGION,
+});
+
+app.get("/signedURL", async (req, res) => {
+  const barcode = Math.floor(Math.random() * randomNumberMultiplier);
+  const objectKey = barcode + ".pdf";
+
+  const command = new PutObjectCommand({
+    Bucket: process.env.S3_BUCKET,
+    Key: objectKey,
+  });
+
+  try {
+    const uploadUrl = await getSignedUrl(s3Client, command, {
+      expiresIn: 3600,
+    }).catch((err) => {
+      console.error(
+        `Error generating s3 presigned url for file :: ${objectKey} :: ${err}`
+      );
+    });
+
+    res.json({
+      upload_url: uploadUrl,
+      object_key: barcode,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({
+      message: "Internal Server Error",
+    });
+  }
+});
+
+app.post("/barcode", async (req, res) => {
   try {
     const body = req?.body;
     const params = body?.params;
@@ -31,14 +71,6 @@ app.post("/api/pdf-converter", async (req, res) => {
         message: "Bad Request",
       });
     }
-
-    const s3Client = new S3Client({
-      credentials: {
-        accessKeyId: process.env.S3_ACCESS_KEY_ID,
-        secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
-      },
-      region: process.env.S3_REGION,
-    });
 
     const getCommand = new GetObjectCommand({
       Bucket: process.env.S3_BUCKET,
@@ -90,7 +122,7 @@ app.post("/api/pdf-converter", async (req, res) => {
       .subClass({ imageMagick: true })(pdfByteBuffer)
       .setFormat("tiff")
       .background("white")
-      .density(80, 80)
+      .density(100, 100)
       .toBuffer(async (err, buf) => {
         if (err) {
           console.error("Error getting tiff buffer", err);
@@ -129,7 +161,7 @@ app.post("/api/pdf-converter", async (req, res) => {
         });
 
         return res.json({
-          tiffUrl,
+          tiff_url: tiffUrl,
         });
       });
   } catch (err) {
