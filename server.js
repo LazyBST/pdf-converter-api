@@ -1,7 +1,16 @@
+import * as dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import { PDFDocument } from "pdf-lib";
 import BwipJs from "bwip-js";
 import gm from "gm";
+import {
+  S3Client,
+  GetObjectCommand,
+  PutObjectCommand,
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const barCodeYcoordinateAdjustment = -35;
 const barCodeXcoordinateAdjustment = 5;
@@ -16,14 +25,30 @@ app.post("/api/pdf-converter", async (req, res) => {
     const body = req?.body;
     const params = body?.params;
 
-    if (!params || !params.pdfBytes || !params.barCodeText) {
+    if (!params || !params.barCodeText) {
       return res.status(400).json({
         statusCode: 400,
         message: "Bad Request",
       });
     }
 
-    const inputPdfBytes = Buffer.from(params.pdfBytes);
+    const s3Client = new S3Client({
+      credentials: {
+        accessKeyId: process.env.S3_ACCESS_KEY_ID,
+        secretAccessKey: process.env.S3_SECRET_ACCESS_KEY,
+      },
+      region: process.env.S3_REGION,
+    });
+
+    const getCommand = new GetObjectCommand({
+      Bucket: process.env.S3_BUCKET,
+      Key: params.barCodeText + ".pdf",
+    });
+
+    const response = await s3Client.send(getCommand);
+    const pdfBytes = await response.Body.transformToByteArray();
+
+    const inputPdfBytes = Buffer.from(pdfBytes);
     const barCodeText = params.barCodeText;
 
     const pdfDoc = await PDFDocument.load(inputPdfBytes);
@@ -58,20 +83,53 @@ app.post("/api/pdf-converter", async (req, res) => {
       height: pngDims.height,
     });
 
-    const pdfBytes = await pdfDoc.save();
-    const pdfByteBuffer = Buffer.from(pdfBytes);
+    const updatedpdfBytes = await pdfDoc.save();
+    const pdfByteBuffer = Buffer.from(updatedpdfBytes);
 
-    gm.subClass({ imageMagick: true })(pdfByteBuffer)
+    return gm
+      .subClass({ imageMagick: true })(pdfByteBuffer)
       .setFormat("tiff")
       .background("white")
-      .density(100, 100)
-      .toBuffer((err, buf) => {
+      .density(80, 80)
+      .toBuffer(async (err, buf) => {
         if (err) {
           console.error("Error getting tiff buffer", err);
           throw err;
         }
+
+        const putCommand = new PutObjectCommand({
+          Bucket: process.env.S3_BUCKET,
+          Key: params.barCodeText + ".tiff",
+          Body: buf,
+          ACL: "public-read",
+        });
+
+        const response = await s3Client.send(putCommand).catch((err) => {
+          console.error("Error uploading to S3: ", err);
+          return "err";
+        });
+
+        if (response === "err") {
+          throw new Error("Error uploading to S3");
+        }
+
+        const command = new GetObjectCommand({
+          Bucket: process.env.S3_BUCKET,
+          Key: params.barCodeText + ".tiff",
+        });
+
+        const tiffUrl = await getSignedUrl(s3Client, command, {
+          expiresIn: 3600,
+        }).catch((err) => {
+          console.error(
+            `Error generating s3 presigned url for file :: ${
+              params.barCodeText + ".tiff"
+            } :: ${err}`
+          );
+        });
+
         return res.json({
-          tiffBytes: buf,
+          tiffUrl,
         });
       });
   } catch (err) {
